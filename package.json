@@ -6,8 +6,8 @@
   "private": true,
 
    "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "bun run src/index.ts",
+    "dev": "nodemon src/index.ts",
     "typecheck": "bunx tsc --noEmit"
   }, 
   "devDependencies": {

@@ -3,11 +3,18 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+
+   "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "typecheck": "bunx tsc --noEmit"
+  }, 
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/node": "^24.9.2"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "amqplib": "^0.10.9",

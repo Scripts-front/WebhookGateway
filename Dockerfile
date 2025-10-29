@@ -5,9 +5,9 @@ WORKDIR /app
 
 COPY . .
 
-RUN bun install
+RUN bun install --production
 
 EXPOSE 3000
 
 # Comando padrão pra iniciar o app
-CMD ["bun", "run", "index.ts"]
+CMD ["bun", "run", "start"]

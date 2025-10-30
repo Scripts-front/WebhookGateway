@@ -296,12 +296,6 @@ app.all('/webhook', async (req, res) => {
     });
 
     console.log(`📤 Dados enviados com sucesso para exchange '${exchangeName}'`);
-    console.log(`📦 Payload (resumo):`, {
-      method: dataToSend.method,
-      paramsCount: Object.keys(queryParams).length,
-      bodySize: JSON.stringify(req.body).length,
-      timestamp: dataToSend.timestamp
-    });
 
     // 7️⃣ RESPONDER ao cliente
     res.status(200).json({

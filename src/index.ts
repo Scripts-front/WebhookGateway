@@ -60,11 +60,11 @@ async function connectRabbitMQ() {
       const vhost = RABBITMQ_VHOST.startsWith('/') ? RABBITMQ_VHOST : `/${RABBITMQ_VHOST}`;
       connectionUrl = `${baseUrl}${vhost}`;
       
-      console.log(`   Base URL: ${baseUrl.replace(/\/\/.*:.*@/, '//*****:*****@')}`);
+      console.log(`   Base URL: ${baseUrl}`);
       console.log(`   VHOST: ${vhost}`);
-      console.log(`   URL Final: ${connectionUrl.replace(/\/\/.*:.*@/, '//*****:*****@')}`);
+      console.log(`   URL Final: ${connectionUrl}`);
     } else {
-      console.log(`   URL: ${connectionUrl.replace(/\/\/.*:.*@/, '//*****:*****@')} (vhost padrão "/")`);
+      console.log(`   URL: ${connectionUrl} (vhost padrão "/")`);
     }
     
     console.log('   Conectando...');

@@ -31,6 +31,9 @@ let isReconnecting = false;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 
+// Cache de exchanges já verificadas/criadas (para performance)
+const exchangeCache = new Set();
+
 async function connectRabbitMQ() {
   if (isReconnecting) {
     console.log('⏳ Já existe uma tentativa de reconexão em andamento...');
@@ -72,6 +75,9 @@ async function connectRabbitMQ() {
     channel = await connection.createChannel();
     console.log('   ✓ Canal criado');
     
+    // Limpa cache de exchanges ao reconectar
+    exchangeCache.clear();
+    
     // Eventos de erro e fechamento
     connection.on('error', handleConnectionError);
     connection.on('close', handleConnectionClose);
@@ -80,6 +86,7 @@ async function connectRabbitMQ() {
     });
     channel.on('close', () => {
       console.warn('⚠️  Canal RabbitMQ foi fechado');
+      exchangeCache.clear();
     });
     
     console.log('✅ Conectado ao RabbitMQ com sucesso!\n');
@@ -125,6 +132,7 @@ async function connectRabbitMQ() {
 function handleConnectionError(err) {
   console.error('\n❌ Erro na conexão RabbitMQ:', err.message);
   channel = null;
+  exchangeCache.clear();
   
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -138,6 +146,7 @@ function handleConnectionClose() {
   console.warn('\n⚠️  Conexão com RabbitMQ foi fechada');
   channel = null;
   connection = null;
+  exchangeCache.clear();
   
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -169,26 +178,53 @@ function scheduleReconnect() {
   }, RECONNECT_INTERVAL);
 }
 
+/**
+ * Garante que o exchange existe. Se não existir, cria automaticamente.
+ * Se já existir, não faz nada (idempotente).
+ * 
+ * @param {string} exchangeName - Nome do exchange
+ * @returns {Promise<boolean>} true se exchange está pronto, false se houve erro
+ */
 async function ensureExchange(exchangeName) {
   try {
     if (!channel) {
       throw new Error('Canal RabbitMQ não disponível');
     }
     
-    console.log(`🔍 Verificando exchange '${exchangeName}'...`);
+    // Se já verificamos esse exchange antes, não precisa verificar novamente
+    if (exchangeCache.has(exchangeName)) {
+      console.log(`✓ Exchange '${exchangeName}' já verificado anteriormente`);
+      return true;
+    }
+    
+    console.log(`🔍 Verificando se exchange '${exchangeName}' existe...`);
+    
+    // assertExchange é IDEMPOTENTE:
+    // - Se o exchange NÃO existe → CRIA
+    // - Se o exchange JÁ existe → NÃO FAZ NADA (apenas confirma)
     await channel.assertExchange(exchangeName, 'fanout', {
-      durable: true
+      durable: true  // Exchange persiste após restart do RabbitMQ
     });
-    console.log(`✅ Exchange '${exchangeName}' pronta`);
+    
+    // Adiciona ao cache para não verificar novamente
+    exchangeCache.add(exchangeName);
+    
+    console.log(`✅ Exchange '${exchangeName}' está pronto (criado ou já existia)`);
     return true;
+    
   } catch (error) {
-    console.error(`❌ Erro ao verificar/criar exchange '${exchangeName}':`, error.message);
+    console.error(`❌ Erro ao garantir exchange '${exchangeName}':`, error.message);
+    
+    // Se der erro, remove do cache para tentar novamente depois
+    exchangeCache.delete(exchangeName);
+    
     return false;
   }
 }
 
 app.all('/webhook', async (req, res) => {
   try {
+    // 1️⃣ VALIDAÇÃO: Token de autenticação
     const token = req.query.token;
     if (!token || token !== AUTH_TOKEN) {
       return res.status(401).json({
@@ -197,6 +233,7 @@ app.all('/webhook', async (req, res) => {
       });
     }
 
+    // 2️⃣ VALIDAÇÃO: Nome do exchange
     const exchangeName = req.query.exchange;
     if (!exchangeName) {
       return res.status(400).json({
@@ -205,6 +242,7 @@ app.all('/webhook', async (req, res) => {
       });
     }
 
+    // 3️⃣ VALIDAÇÃO: Conexão com RabbitMQ
     if (!channel) {
       console.warn('⚠️  Requisição recebida mas RabbitMQ está desconectado');
       
@@ -220,14 +258,19 @@ app.all('/webhook', async (req, res) => {
       });
     }
 
+    // 4️⃣ GARANTIR QUE EXCHANGE EXISTE (cria se não existir)
+    console.log(`\n📥 Webhook recebido - Exchange: '${exchangeName}'`);
     const exchangeReady = await ensureExchange(exchangeName);
+    
     if (!exchangeReady) {
       return res.status(500).json({
         success: false,
-        error: 'Não foi possível preparar a exchange no RabbitMQ'
+        error: 'Não foi possível preparar o exchange no RabbitMQ',
+        exchange: exchangeName
       });
     }
 
+    // 5️⃣ PREPARAR DADOS para enviar
     const queryParams = { ...req.query };
     delete queryParams.exchange;
     delete queryParams.token;
@@ -243,20 +286,24 @@ app.all('/webhook', async (req, res) => {
       originalUrl: req.originalUrl
     };
 
+    // 6️⃣ PUBLICAR mensagem no exchange
     const message = Buffer.from(JSON.stringify(dataToSend));
+    
     channel.publish(exchangeName, '', message, {
-      persistent: true,
+      persistent: true,              // Mensagem sobrevive a restart do RabbitMQ
       contentType: 'application/json',
       timestamp: Date.now()
     });
 
-    console.log(`📤 Dados enviados para exchange '${exchangeName}'`);
+    console.log(`📤 Dados enviados com sucesso para exchange '${exchangeName}'`);
     console.log(`📦 Payload (resumo):`, {
       method: dataToSend.method,
       paramsCount: Object.keys(queryParams).length,
-      bodySize: JSON.stringify(req.body).length
+      bodySize: JSON.stringify(req.body).length,
+      timestamp: dataToSend.timestamp
     });
 
+    // 7️⃣ RESPONDER ao cliente
     res.status(200).json({
       success: true,
       message: 'Dados recebidos e enviados para RabbitMQ',
@@ -267,8 +314,12 @@ app.all('/webhook', async (req, res) => {
   } catch (error) {
     console.error('❌ Erro ao processar webhook:', error.message);
     
-    if (error.message.includes('Channel closed') || error.message.includes('Connection closed')) {
+    // Se o erro for relacionado ao canal/conexão, limpa e agenda reconexão
+    if (error.message.includes('Channel closed') || 
+        error.message.includes('Connection closed') ||
+        error.message.includes('Channel ended')) {
       channel = null;
+      exchangeCache.clear();
       scheduleReconnect();
     }
     
@@ -287,6 +338,7 @@ app.get('/health', (req, res) => {
     reconnectAttempts: reconnectAttempts,
     maxAttempts: MAX_RECONNECT_ATTEMPTS,
     isReconnecting: isReconnecting,
+    exchangesInCache: exchangeCache.size,
     timestamp: new Date().toISOString()
   });
 });
@@ -296,7 +348,6 @@ app.get('/debug', async (req, res) => {
   const debugInfo = {
     env: {
       RABBITMQ_URL_SET: !!RABBITMQ_URL,
-      RABBITMQ_URL_FORMAT: RABBITMQ_URL ? 'not set',
       RABBITMQ_VHOST: RABBITMQ_VHOST || 'not set (default "/")',
       AUTH_TOKEN_SET: !!AUTH_TOKEN,
       MAX_RECONNECT_ATTEMPTS: MAX_RECONNECT_ATTEMPTS
@@ -306,6 +357,10 @@ app.get('/debug', async (req, res) => {
       reconnectAttempts: reconnectAttempts,
       isReconnecting: isReconnecting,
       hasReconnectTimer: !!reconnectTimer
+    },
+    exchanges: {
+      cachedCount: exchangeCache.size,
+      cached: Array.from(exchangeCache)
     },
     timestamp: new Date().toISOString()
   };

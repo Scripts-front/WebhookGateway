@@ -135,6 +135,3 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-
-#Ignore vscode AI rules
-.github\instructions\codacy.instructions.md

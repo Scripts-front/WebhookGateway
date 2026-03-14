@@ -201,13 +201,15 @@ async function ensureExchange(exchangeName: string): Promise<boolean> {
       throw new Error('Canal RabbitMQ não disponível');
     }
 
-    // Se já verificamos esse exchange antes, não precisa verificar novamente
-    if (exchangeCache.has(exchangeName)) {
-      console.log(`✓ Exchange '${exchangeName}' já verificado anteriormente`);
-      return true;
-    }
+    // SEMPRE verifica/cria o exchange, mesmo que esteja no cache
+    // Isso garante que se o exchange foi deletado manualmente, ele será recriado
+    const wasCached = exchangeCache.has(exchangeName);
 
-    console.log(`🔍 Verificando se exchange '${exchangeName}' existe...`);
+    if (wasCached) {
+      console.log(`🔍 Revalidando exchange '${exchangeName}' (estava em cache)...`);
+    } else {
+      console.log(`🔍 Verificando se exchange '${exchangeName}' existe...`);
+    }
 
     // assertExchange é IDEMPOTENTE:
     // - Se o exchange NÃO existe → CRIA
@@ -216,10 +218,14 @@ async function ensureExchange(exchangeName: string): Promise<boolean> {
       durable: true  // Exchange persiste após restart do RabbitMQ
     });
 
-    // Adiciona ao cache para não verificar novamente
+    // Adiciona ao cache
     exchangeCache.add(exchangeName);
 
-    console.log(`✅ Exchange '${exchangeName}' está pronto (criado ou já existia)`);
+    if (wasCached) {
+      console.log(`✅ Exchange '${exchangeName}' revalidado com sucesso`);
+    } else {
+      console.log(`✅ Exchange '${exchangeName}' está pronto (criado ou já existia)`);
+    }
     return true;
 
   } catch (error: unknown) {
@@ -246,13 +252,15 @@ async function ensureQueue(queueName: string): Promise<boolean> {
       throw new Error('Canal RabbitMQ não disponível');
     }
 
-    // Se já verificamos essa fila antes, não precisa verificar novamente
-    if (queueCache.has(queueName)) {
-      console.log(`✓ Fila '${queueName}' já verificada anteriormente`);
-      return true;
-    }
+    // SEMPRE verifica/cria a fila, mesmo que esteja no cache
+    // Isso garante que se a fila foi deletada manualmente, ela será recriada
+    const wasCached = queueCache.has(queueName);
 
-    console.log(`🔍 Verificando se fila '${queueName}' existe...`);
+    if (wasCached) {
+      console.log(`🔍 Revalidando fila '${queueName}' (estava em cache)...`);
+    } else {
+      console.log(`🔍 Verificando se fila '${queueName}' existe...`);
+    }
 
     // assertQueue é IDEMPOTENTE:
     // - Se a fila NÃO existe → CRIA
@@ -261,10 +269,14 @@ async function ensureQueue(queueName: string): Promise<boolean> {
       durable: true  // Fila persiste após restart do RabbitMQ
     });
 
-    // Adiciona ao cache para não verificar novamente
+    // Adiciona ao cache
     queueCache.add(queueName);
 
-    console.log(`✅ Fila '${queueName}' está pronta (criada ou já existia)`);
+    if (wasCached) {
+      console.log(`✅ Fila '${queueName}' revalidada com sucesso`);
+    } else {
+      console.log(`✅ Fila '${queueName}' está pronta (criada ou já existia)`);
+    }
     console.log(`   📊 Info: ${queueInfo.messageCount} mensagens, ${queueInfo.consumerCount} consumidores`);
     return true;
 

@@ -257,7 +257,7 @@ async function ensureQueue(queueName: string): Promise<boolean> {
     // assertQueue é IDEMPOTENTE:
     // - Se a fila NÃO existe → CRIA
     // - Se a fila JÁ existe → NÃO FAZ NADA (apenas confirma)
-    await channel.assertQueue(queueName, {
+    const queueInfo = await channel.assertQueue(queueName, {
       durable: true  // Fila persiste após restart do RabbitMQ
     });
 
@@ -265,6 +265,7 @@ async function ensureQueue(queueName: string): Promise<boolean> {
     queueCache.add(queueName);
 
     console.log(`✅ Fila '${queueName}' está pronta (criada ou já existia)`);
+    console.log(`   📊 Info: ${queueInfo.messageCount} mensagens, ${queueInfo.consumerCount} consumidores`);
     return true;
 
   } catch (error: unknown) {
@@ -364,20 +365,40 @@ app.all('/webhook', async (req: Request, res: Response) => {
     // 6️⃣ PUBLICAR mensagem no exchange ou fila
     const message = Buffer.from(JSON.stringify(dataToSend));
 
+    console.log(`📦 Preparando envio:`);
+    console.log(`   📏 Tamanho: ${message.length} bytes`);
+    console.log(`   🔑 Método: ${dataToSend.method}`);
+    console.log(`   📋 Body keys: ${Object.keys(dataToSend.body || {}).join(', ') || 'vazio'}`);
+
     const messageOptions = {
       persistent: true,              // Mensagem sobrevive a restart do RabbitMQ
       contentType: 'application/json',
       timestamp: Date.now()
     };
 
+    let sendSuccess = false;
+
     if (exchangeName) {
       // Publicar em exchange (fanout)
-      channel.publish(exchangeName, '', message, messageOptions);
-      console.log(`📤 Dados enviados com sucesso para exchange '${exchangeName}'`);
+      console.log(`🚀 Publicando no exchange '${exchangeName}'...`);
+      sendSuccess = channel.publish(exchangeName, '', message, messageOptions);
+      if (sendSuccess) {
+        console.log(`✅ Mensagem publicada com sucesso no exchange '${exchangeName}'`);
+      } else {
+        console.error(`❌ Falha ao enviar dados para exchange '${exchangeName}' - Buffer cheio`);
+        throw new Error('Falha ao publicar mensagem no exchange - buffer cheio');
+      }
     } else if (queueName) {
       // Enviar diretamente para fila (usando default exchange)
-      channel.sendToQueue(queueName, message, messageOptions);
-      console.log(`📤 Dados enviados com sucesso para fila '${queueName}'`);
+      console.log(`🚀 Enviando para fila '${queueName}'...`);
+      sendSuccess = channel.sendToQueue(queueName, message, messageOptions);
+      if (sendSuccess) {
+        console.log(`✅ Mensagem enviada com sucesso para fila '${queueName}'`);
+        console.log(`   ✓ Mensagem confirmada no buffer do canal`);
+      } else {
+        console.error(`❌ Falha ao enviar dados para fila '${queueName}' - Buffer cheio ou fila não existe`);
+        throw new Error('Falha ao enviar mensagem para a fila - buffer cheio ou fila não existe');
+      }
     }
 
     // 7️⃣ RESPONDER ao cliente

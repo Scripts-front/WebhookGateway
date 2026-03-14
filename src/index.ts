@@ -15,6 +15,9 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN;
 const RABBITMQ_VHOST = process.env.RABBITMQ_VHOST;
 const MAX_RECONNECT_ATTEMPTS = parseInt(process.env.MAX_RECONNECT_ATTEMPTS || '10', 10);
 const RECONNECT_INTERVAL = 5000;
+// Se true, pula validação quando fila/exchange está em cache (mais rápido, mas pode ter falso positivo se deletado manualmente)
+// Se false, sempre valida mesmo que esteja em cache (mais seguro, garante que fila/exchange existe)
+const ENABLE_CACHE_SKIP = process.env.ENABLE_CACHE_SKIP === 'true';
 
 console.log('🔧 Configurações carregadas:');
 console.log('   PORT:', PORT);
@@ -23,6 +26,7 @@ console.log('   RABBITMQ_URL (sem credenciais):', RABBITMQ_URL ? RABBITMQ_URL.re
 console.log('   RABBITMQ_VHOST:', RABBITMQ_VHOST ? `"${RABBITMQ_VHOST}" ✅` : 'Não configurado (usará vhost padrão "/") ⚠️');
 console.log('   AUTH_TOKEN:', AUTH_TOKEN ? 'Configurado ✅' : 'Não configurado ❌');
 console.log('   MAX_RECONNECT_ATTEMPTS:', MAX_RECONNECT_ATTEMPTS);
+console.log('   ENABLE_CACHE_SKIP:', ENABLE_CACHE_SKIP ? '✅ Habilitado (rápido)' : '❌ Desabilitado (seguro)');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -201,8 +205,12 @@ async function ensureExchange(exchangeName: string): Promise<boolean> {
       throw new Error('Canal RabbitMQ não disponível');
     }
 
-    // SEMPRE verifica/cria o exchange, mesmo que esteja no cache
-    // Isso garante que se o exchange foi deletado manualmente, ele será recriado
+    // Se ENABLE_CACHE_SKIP está ativo e exchange está em cache, pula validação
+    if (ENABLE_CACHE_SKIP && exchangeCache.has(exchangeName)) {
+      console.log(`✓ Exchange '${exchangeName}' já verificado anteriormente (cache ativo)`);
+      return true;
+    }
+
     const wasCached = exchangeCache.has(exchangeName);
 
     if (wasCached) {
@@ -252,8 +260,12 @@ async function ensureQueue(queueName: string): Promise<boolean> {
       throw new Error('Canal RabbitMQ não disponível');
     }
 
-    // SEMPRE verifica/cria a fila, mesmo que esteja no cache
-    // Isso garante que se a fila foi deletada manualmente, ela será recriada
+    // Se ENABLE_CACHE_SKIP está ativo e fila está em cache, pula validação
+    if (ENABLE_CACHE_SKIP && queueCache.has(queueName)) {
+      console.log(`✓ Fila '${queueName}' já verificada anteriormente (cache ativo)`);
+      return true;
+    }
+
     const wasCached = queueCache.has(queueName);
 
     if (wasCached) {

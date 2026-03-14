@@ -54,14 +54,24 @@ Recebe webhooks e publica no RabbitMQ.
 **Métodos suportados:** `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
 
 **Query Parameters obrigatórios:**
-- `exchange` (string): Nome do exchange no RabbitMQ onde os dados serão publicados
+- `exchange` (string) **OU** `queue` (string):
+  - `exchange`: Nome do exchange no RabbitMQ (tipo fanout - envia para todas as filas vinculadas)
+  - `queue`: Nome da fila no RabbitMQ (envio direto, ponto-a-ponto)
+  - **Atenção:** Forneça apenas um dos dois, não ambos
 - `token` (string): Token de autenticação (deve corresponder ao `AUTH_TOKEN` do `.env`)
 
 #### Exemplos de Uso
 
-**POST com JSON:**
+**POST com JSON (para Exchange):**
 ```bash
 curl -X POST "http://localhost:3000/webhook?exchange=meu-exchange&token=seu-token-secreto" \
+  -H "Content-Type: application/json" \
+  -d '{"evento": "compra", "valor": 100.50, "usuario_id": 123}'
+```
+
+**POST com JSON (para Fila):**
+```bash
+curl -X POST "http://localhost:3000/webhook?queue=minha-fila&token=seu-token-secreto" \
   -H "Content-Type: application/json" \
   -d '{"evento": "compra", "valor": 100.50, "usuario_id": 123}'
 ```
@@ -74,18 +84,29 @@ curl -X POST "http://localhost:3000/webhook?exchange=formularios&token=seu-token
   -F "arquivo=@documento.pdf"
 ```
 
-**GET com Query Params:**
+**GET com Query Params (para Fila):**
 ```bash
-curl "http://localhost:3000/webhook?exchange=eventos&token=seu-token-secreto&evento=click&pagina=home"
+curl "http://localhost:3000/webhook?queue=eventos&token=seu-token-secreto&evento=click&pagina=home"
 ```
 
 #### Resposta de Sucesso (200)
 
+**Quando enviado para Exchange:**
 ```json
 {
   "success": true,
   "message": "Dados recebidos e enviados para RabbitMQ",
   "exchange": "meu-exchange",
+  "timestamp": "2025-03-13T10:30:45.123Z"
+}
+```
+
+**Quando enviado para Fila:**
+```json
+{
+  "success": true,
+  "message": "Dados recebidos e enviados para RabbitMQ",
+  "queue": "minha-fila",
   "timestamp": "2025-03-13T10:30:45.123Z"
 }
 ```
@@ -126,11 +147,19 @@ Os dados enviados ao RabbitMQ incluem informações completas sobre a requisiç�
 }
 ```
 
-**400 - Exchange não informado:**
+**400 - Exchange/Queue não informado:**
 ```json
 {
   "success": false,
-  "error": "Parâmetro \"exchange\" é obrigatório"
+  "error": "Parâmetro \"exchange\" ou \"queue\" é obrigatório"
+}
+```
+
+**400 - Ambos informados:**
+```json
+{
+  "success": false,
+  "error": "Forneça apenas \"exchange\" OU \"queue\", não ambos"
 }
 ```
 
@@ -160,7 +189,8 @@ curl http://localhost:3000/health
   "reconnectAttempts": 0,
   "maxAttempts": 10,
   "isReconnecting": false,
-  "exchangesInCache": 3,
+  "exchangesInCache": 2,
+  "queuesInCache": 3,
   "timestamp": "2025-03-13T10:30:45.123Z"
 }
 ```
@@ -192,9 +222,27 @@ curl http://localhost:3000/debug
     "cachedCount": 2,
     "cached": ["meu-exchange", "formularios"]
   },
+  "queues": {
+    "cachedCount": 1,
+    "cached": ["minha-fila"]
+  },
   "timestamp": "2025-03-13T10:30:45.123Z"
 }
 ```
+
+## Exchange vs Fila: Quando usar?
+
+### Usar `exchange` quando:
+- **Múltiplos consumidores:** Várias aplicações precisam receber a mesma mensagem
+- **Broadcast:** Modelo pub/sub (1 produtor, N consumidores)
+- **Flexibilidade:** Consumidores podem ser adicionados/removidos dinamicamente
+- **Exemplo:** Notificações, eventos de sistema, logs
+
+### Usar `queue` quando:
+- **Consumidor único:** Apenas uma aplicação processa a mensagem
+- **Ponto-a-ponto:** Modelo de fila tradicional (1 produtor, 1 consumidor)
+- **Simplicidade:** Não precisa de configuração de bindings
+- **Exemplo:** Processamento de tarefas, jobs, filas de trabalho
 
 ## Comportamento do RabbitMQ
 
@@ -203,6 +251,14 @@ curl http://localhost:3000/debug
 - **Tipo:** Fanout (envia para todas as filas conectadas ao exchange)
 - **Durável:** Sim (persiste após restart do RabbitMQ)
 - **Auto-criação:** Se o exchange não existir, será criado automaticamente
+- **Nota:** Requer filas vinculadas (bound) para armazenar mensagens
+
+### Filas
+
+- **Tipo:** Direct (envio direto usando default exchange)
+- **Durável:** Sim (persiste após restart do RabbitMQ)
+- **Auto-criação:** Se a fila não existir, será criada automaticamente
+- **Vantagem:** Mensagens são armazenadas imediatamente, sem necessidade de bindings
 
 ### Mensagens
 

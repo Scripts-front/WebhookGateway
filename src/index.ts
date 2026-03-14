@@ -36,6 +36,9 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 // Cache de exchanges já verificadas/criadas (para performance)
 const exchangeCache = new Set<string>();
 
+// Cache de filas já verificadas/criadas (para performance)
+const queueCache = new Set<string>();
+
 async function connectRabbitMQ(): Promise<boolean> {
   if (isReconnecting) {
     console.log('⏳ Já existe uma tentativa de reconexão em andamento...');
@@ -77,8 +80,9 @@ async function connectRabbitMQ(): Promise<boolean> {
     channel = await connection.createChannel();
     console.log('   ✓ Canal criado');
 
-    // Limpa cache de exchanges ao reconectar
+    // Limpa cache de exchanges e filas ao reconectar
     exchangeCache.clear();
+    queueCache.clear();
 
     // Eventos de erro e fechamento
     connection.on('error', handleConnectionError);
@@ -89,6 +93,7 @@ async function connectRabbitMQ(): Promise<boolean> {
     channel.on('close', () => {
       console.warn('⚠️  Canal RabbitMQ foi fechado');
       exchangeCache.clear();
+      queueCache.clear();
     });
 
     console.log('✅ Conectado ao RabbitMQ com sucesso!\n');
@@ -136,6 +141,7 @@ function handleConnectionError(err: Error) {
   console.error('\n❌ Erro na conexão RabbitMQ:', err.message);
   channel = null;
   exchangeCache.clear();
+  queueCache.clear();
 
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -150,6 +156,7 @@ function handleConnectionClose() {
   channel = null;
   connection = null;
   exchangeCache.clear();
+  queueCache.clear();
 
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -226,6 +233,51 @@ async function ensureExchange(exchangeName: string): Promise<boolean> {
   }
 }
 
+/**
+ * Garante que a fila existe. Se não existir, cria automaticamente.
+ * Se já existir, não faz nada (idempotente).
+ *
+ * @param {string} queueName - Nome da fila
+ * @returns {Promise<boolean>} true se fila está pronta, false se houve erro
+ */
+async function ensureQueue(queueName: string): Promise<boolean> {
+  try {
+    if (!channel) {
+      throw new Error('Canal RabbitMQ não disponível');
+    }
+
+    // Se já verificamos essa fila antes, não precisa verificar novamente
+    if (queueCache.has(queueName)) {
+      console.log(`✓ Fila '${queueName}' já verificada anteriormente`);
+      return true;
+    }
+
+    console.log(`🔍 Verificando se fila '${queueName}' existe...`);
+
+    // assertQueue é IDEMPOTENTE:
+    // - Se a fila NÃO existe → CRIA
+    // - Se a fila JÁ existe → NÃO FAZ NADA (apenas confirma)
+    await channel.assertQueue(queueName, {
+      durable: true  // Fila persiste após restart do RabbitMQ
+    });
+
+    // Adiciona ao cache para não verificar novamente
+    queueCache.add(queueName);
+
+    console.log(`✅ Fila '${queueName}' está pronta (criada ou já existia)`);
+    return true;
+
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(`❌ Erro ao garantir fila '${queueName}':`, err.message);
+
+    // Se der erro, remove do cache para tentar novamente depois
+    queueCache.delete(queueName);
+
+    return false;
+  }
+}
+
 app.all('/webhook', async (req: Request, res: Response) => {
   try {
     // 1️⃣ VALIDAÇÃO: Token de autenticação
@@ -237,12 +289,22 @@ app.all('/webhook', async (req: Request, res: Response) => {
       });
     }
 
-    // 2️⃣ VALIDAÇÃO: Nome do exchange
+    // 2️⃣ VALIDAÇÃO: Nome do exchange ou fila
     const exchangeName = req.query.exchange as string | undefined;
-    if (!exchangeName) {
+    const queueName = req.query.queue as string | undefined;
+
+    // Deve fornecer exchange OU queue, mas não ambos
+    if (!exchangeName && !queueName) {
       return res.status(400).json({
         success: false,
-        error: 'Parâmetro "exchange" é obrigatório'
+        error: 'Parâmetro "exchange" ou "queue" é obrigatório'
+      });
+    }
+
+    if (exchangeName && queueName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Forneça apenas "exchange" OU "queue", não ambos'
       });
     }
 
@@ -262,15 +324,24 @@ app.all('/webhook', async (req: Request, res: Response) => {
       });
     }
 
-    // 4️⃣ GARANTIR QUE EXCHANGE EXISTE (cria se não existir)
-    console.log(`\n📥 Webhook recebido - Exchange: '${exchangeName}'`);
-    const exchangeReady = await ensureExchange(exchangeName);
+    // 4️⃣ GARANTIR QUE EXCHANGE/FILA EXISTE (cria se não existir)
+    const targetType = exchangeName ? 'exchange' : 'queue';
+    const targetName = (exchangeName || queueName) as string;
 
-    if (!exchangeReady) {
+    console.log(`\n📥 Webhook recebido - ${targetType}: '${targetName}'`);
+
+    let isReady = false;
+    if (exchangeName) {
+      isReady = await ensureExchange(exchangeName);
+    } else if (queueName) {
+      isReady = await ensureQueue(queueName);
+    }
+
+    if (!isReady) {
       return res.status(500).json({
         success: false,
-        error: 'Não foi possível preparar o exchange no RabbitMQ',
-        exchange: exchangeName
+        error: `Não foi possível preparar ${targetType === 'exchange' ? 'o exchange' : 'a fila'} no RabbitMQ`,
+        [targetType]: targetName
       });
     }
 
@@ -290,24 +361,39 @@ app.all('/webhook', async (req: Request, res: Response) => {
       originalUrl: req.originalUrl
     };
 
-    // 6️⃣ PUBLICAR mensagem no exchange
+    // 6️⃣ PUBLICAR mensagem no exchange ou fila
     const message = Buffer.from(JSON.stringify(dataToSend));
 
-    channel.publish(exchangeName, '', message, {
+    const messageOptions = {
       persistent: true,              // Mensagem sobrevive a restart do RabbitMQ
       contentType: 'application/json',
       timestamp: Date.now()
-    });
+    };
 
-    console.log(`📤 Dados enviados com sucesso para exchange '${exchangeName}'`);
+    if (exchangeName) {
+      // Publicar em exchange (fanout)
+      channel.publish(exchangeName, '', message, messageOptions);
+      console.log(`📤 Dados enviados com sucesso para exchange '${exchangeName}'`);
+    } else if (queueName) {
+      // Enviar diretamente para fila (usando default exchange)
+      channel.sendToQueue(queueName, message, messageOptions);
+      console.log(`📤 Dados enviados com sucesso para fila '${queueName}'`);
+    }
 
     // 7️⃣ RESPONDER ao cliente
-    res.status(200).json({
+    const responseData: any = {
       success: true,
       message: 'Dados recebidos e enviados para RabbitMQ',
-      exchange: exchangeName,
       timestamp: dataToSend.timestamp
-    });
+    };
+
+    if (exchangeName) {
+      responseData.exchange = exchangeName;
+    } else if (queueName) {
+      responseData.queue = queueName;
+    }
+
+    res.status(200).json(responseData);
 
   } catch (error: unknown) {
     const err = error as Error;
@@ -319,6 +405,7 @@ app.all('/webhook', async (req: Request, res: Response) => {
         err.message.includes('Channel ended')) {
       channel = null;
       exchangeCache.clear();
+      queueCache.clear();
       scheduleReconnect();
     }
 
@@ -338,6 +425,7 @@ app.get('/health', (req: Request, res: Response) => {
     maxAttempts: MAX_RECONNECT_ATTEMPTS,
     isReconnecting: isReconnecting,
     exchangesInCache: exchangeCache.size,
+    queuesInCache: queueCache.size,
     timestamp: new Date().toISOString()
   });
 });
@@ -361,6 +449,10 @@ app.get('/debug', async (req: Request, res: Response) => {
       cachedCount: exchangeCache.size,
       cached: Array.from(exchangeCache)
     },
+    queues: {
+      cachedCount: queueCache.size,
+      cached: Array.from(queueCache)
+    },
     timestamp: new Date().toISOString()
   };
 
@@ -382,7 +474,8 @@ async function start() {
 
   app.listen(PORT, () => {
     console.log(`\n🚀 API rodando na porta ${PORT}`);
-    console.log(`📍 Webhook: http://localhost:${PORT}/webhook?exchange=NOME&token=TOKEN`);
+    console.log(`📍 Webhook (Exchange): http://localhost:${PORT}/webhook?exchange=NOME&token=TOKEN`);
+    console.log(`📍 Webhook (Fila):     http://localhost:${PORT}/webhook?queue=NOME&token=TOKEN`);
     console.log(`💚 Health: http://localhost:${PORT}/health`);
     console.log(`🐛 Debug: http://localhost:${PORT}/debug`);
   });

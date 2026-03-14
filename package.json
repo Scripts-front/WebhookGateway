@@ -2,7 +2,7 @@
   "name": "webhookgateway",
   "module": "index.ts",
   "type": "module",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "private": true,
   "scripts": {
     "start": "bun run src/index.ts",

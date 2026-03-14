@@ -22,8 +22,6 @@ const ENABLE_CACHE_SKIP = process.env.ENABLE_CACHE_SKIP === 'true';
 console.log('🔧 Configurações carregadas:');
 console.log('   PORT:', PORT);
 console.log('   RABBITMQ_URL:', RABBITMQ_URL ? 'Configurado ✅' : 'Não configurado ❌');
-console.log('   RABBITMQ_URL (sem credenciais):', RABBITMQ_URL ? RABBITMQ_URL.replace(/\/\/.*:.*@/, '//*****:*****@') : 'N/A');
-console.log('   RABBITMQ_VHOST:', RABBITMQ_VHOST ? `"${RABBITMQ_VHOST}" ✅` : 'Não configurado (usará vhost padrão "/") ⚠️');
 console.log('   AUTH_TOKEN:', AUTH_TOKEN ? 'Configurado ✅' : 'Não configurado ❌');
 console.log('   MAX_RECONNECT_ATTEMPTS:', MAX_RECONNECT_ATTEMPTS);
 console.log('   ENABLE_CACHE_SKIP:', ENABLE_CACHE_SKIP ? '✅ Habilitado (rápido)' : '❌ Desabilitado (seguro)');

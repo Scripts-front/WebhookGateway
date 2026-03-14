@@ -1,5 +1,7 @@
-const express = require('express');
-const amqp = require('amqplib');
+import express from 'express';
+import type { Request, Response } from 'express';
+import amqp from 'amqplib';
+import type { Channel, ChannelModel } from 'amqplib';
 
 // Carrega .env apenas se não estiver usando Docker
 if (!process.env.DOCKER_ENV) {
@@ -11,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 const RABBITMQ_URL = process.env.RABBITMQ_URL;
 const AUTH_TOKEN = process.env.AUTH_TOKEN;
 const RABBITMQ_VHOST = process.env.RABBITMQ_VHOST;
-const MAX_RECONNECT_ATTEMPTS = parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 10;
+const MAX_RECONNECT_ATTEMPTS = parseInt(process.env.MAX_RECONNECT_ATTEMPTS || '10', 10);
 const RECONNECT_INTERVAL = 5000;
 
 console.log('🔧 Configurações carregadas:');
@@ -25,16 +27,16 @@ console.log('   MAX_RECONNECT_ATTEMPTS:', MAX_RECONNECT_ATTEMPTS);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-let connection = null;
-let channel = null;
+let connection: ChannelModel | null = null;
+let channel: Channel | null = null;
 let isReconnecting = false;
 let reconnectAttempts = 0;
-let reconnectTimer = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Cache de exchanges já verificadas/criadas (para performance)
-const exchangeCache = new Set();
+const exchangeCache = new Set<string>();
 
-async function connectRabbitMQ() {
+async function connectRabbitMQ(): Promise<boolean> {
   if (isReconnecting) {
     console.log('⏳ Já existe uma tentativa de reconexão em andamento...');
     return false;
@@ -43,9 +45,9 @@ async function connectRabbitMQ() {
   try {
     isReconnecting = true;
     reconnectAttempts++;
-    
+
     console.log(`\n🔌 Tentando conectar ao RabbitMQ (tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-    
+
     // Validação básica da URL
     if (!RABBITMQ_URL) {
       throw new Error('RABBITMQ_URL não está configurado nas variáveis de ambiente');
@@ -59,86 +61,87 @@ async function connectRabbitMQ() {
       // Garante que vhost começa com /
       const vhost = RABBITMQ_VHOST.startsWith('/') ? RABBITMQ_VHOST : `/${RABBITMQ_VHOST}`;
       connectionUrl = `${baseUrl}${vhost}`;
-      
+
       console.log(`   Base URL: ${baseUrl}`);
       console.log(`   VHOST: ${vhost}`);
       console.log(`   URL Final: ${connectionUrl}`);
     } else {
       console.log(`   URL: ${connectionUrl} (vhost padrão "/")`);
     }
-    
+
     console.log('   Conectando...');
     connection = await amqp.connect(connectionUrl);
     console.log('   ✓ Conexão estabelecida');
-    
+
     console.log('   Criando canal...');
     channel = await connection.createChannel();
     console.log('   ✓ Canal criado');
-    
+
     // Limpa cache de exchanges ao reconectar
     exchangeCache.clear();
-    
+
     // Eventos de erro e fechamento
     connection.on('error', handleConnectionError);
     connection.on('close', handleConnectionClose);
-    channel.on('error', (err) => {
+    channel.on('error', (err: Error) => {
       console.error('❌ Erro no canal RabbitMQ:', err.message);
     });
     channel.on('close', () => {
       console.warn('⚠️  Canal RabbitMQ foi fechado');
       exchangeCache.clear();
     });
-    
+
     console.log('✅ Conectado ao RabbitMQ com sucesso!\n');
     isReconnecting = false;
     reconnectAttempts = 0;
-    
+
     return true;
-  } catch (error) {
+  } catch (error: unknown) {
+    const err = error as Error;
     console.error(`\n❌ Erro ao conectar RabbitMQ (tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}):`);
-    console.error('   Tipo:', error.name);
-    console.error('   Mensagem:', error.message);
-    
+    console.error('   Tipo:', err.name);
+    console.error('   Mensagem:', err.message);
+
     // Debug adicional para erros comuns
-    if (error.message.includes('ECONNREFUSED')) {
+    if (err.message.includes('ECONNREFUSED')) {
       console.error('   💡 Dica: O RabbitMQ não está respondendo. Verifique se está rodando.');
       console.error('      - Docker: docker ps | grep rabbitmq');
       console.error('      - Local: sudo systemctl status rabbitmq-server');
-    } else if (error.message.includes('ACCESS_REFUSED') || error.message.includes('403')) {
+    } else if (err.message.includes('ACCESS_REFUSED') || err.message.includes('403')) {
       console.error('   💡 Dica: Credenciais incorretas ou vhost não existe.');
       console.error('      - Verifique usuário/senha na URL');
       console.error('      - Verifique se o vhost existe no RabbitMQ');
-    } else if (error.message.includes('ENOTFOUND')) {
+    } else if (err.message.includes('ENOTFOUND')) {
       console.error('   💡 Dica: Host não encontrado. Verifique o hostname na URL.');
-    } else if (error.message.includes('timeout')) {
+    } else if (err.message.includes('timeout')) {
       console.error('   💡 Dica: Timeout na conexão. Firewall ou rede?');
     }
-    
-    if (error.stack) {
-      console.error('   Stack:', error.stack.split('\n').slice(0, 3).join('\n   '));
+
+    if (err.stack) {
+      console.error('   Stack:', err.stack.split('\n').slice(0, 3).join('\n   '));
     }
-    
+
     isReconnecting = false;
-    
+
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       console.error('\n💀 Máximo de tentativas de reconexão atingido. Encerrando aplicação...');
       process.exit(1);
     }
-    
+
     return false;
   }
 }
 
-function handleConnectionError(err) {
+function handleConnectionError(err: Error) {
   console.error('\n❌ Erro na conexão RabbitMQ:', err.message);
   channel = null;
   exchangeCache.clear();
-  
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  
+
   scheduleReconnect();
 }
 
@@ -147,12 +150,12 @@ function handleConnectionClose() {
   channel = null;
   connection = null;
   exchangeCache.clear();
-  
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  
+
   scheduleReconnect();
 }
 
@@ -161,15 +164,15 @@ function scheduleReconnect() {
     console.log('⏳ Reconexão já agendada...');
     return;
   }
-  
+
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     console.error('💀 Máximo de tentativas de reconexão atingido. Encerrando aplicação...');
     process.exit(1);
     return;
   }
-  
+
   console.log(`🔄 Aguardando ${RECONNECT_INTERVAL / 1000} segundos para tentar reconectar...`);
-  
+
   reconnectTimer = setTimeout(async () => {
     const connected = await connectRabbitMQ();
     if (!connected) {
@@ -181,48 +184,49 @@ function scheduleReconnect() {
 /**
  * Garante que o exchange existe. Se não existir, cria automaticamente.
  * Se já existir, não faz nada (idempotente).
- * 
+ *
  * @param {string} exchangeName - Nome do exchange
  * @returns {Promise<boolean>} true se exchange está pronto, false se houve erro
  */
-async function ensureExchange(exchangeName) {
+async function ensureExchange(exchangeName: string): Promise<boolean> {
   try {
     if (!channel) {
       throw new Error('Canal RabbitMQ não disponível');
     }
-    
+
     // Se já verificamos esse exchange antes, não precisa verificar novamente
     if (exchangeCache.has(exchangeName)) {
       console.log(`✓ Exchange '${exchangeName}' já verificado anteriormente`);
       return true;
     }
-    
+
     console.log(`🔍 Verificando se exchange '${exchangeName}' existe...`);
-    
+
     // assertExchange é IDEMPOTENTE:
     // - Se o exchange NÃO existe → CRIA
     // - Se o exchange JÁ existe → NÃO FAZ NADA (apenas confirma)
     await channel.assertExchange(exchangeName, 'fanout', {
       durable: true  // Exchange persiste após restart do RabbitMQ
     });
-    
+
     // Adiciona ao cache para não verificar novamente
     exchangeCache.add(exchangeName);
-    
+
     console.log(`✅ Exchange '${exchangeName}' está pronto (criado ou já existia)`);
     return true;
-    
-  } catch (error) {
-    console.error(`❌ Erro ao garantir exchange '${exchangeName}':`, error.message);
-    
+
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(`❌ Erro ao garantir exchange '${exchangeName}':`, err.message);
+
     // Se der erro, remove do cache para tentar novamente depois
     exchangeCache.delete(exchangeName);
-    
+
     return false;
   }
 }
 
-app.all('/webhook', async (req, res) => {
+app.all('/webhook', async (req: Request, res: Response) => {
   try {
     // 1️⃣ VALIDAÇÃO: Token de autenticação
     const token = req.query.token;
@@ -234,7 +238,7 @@ app.all('/webhook', async (req, res) => {
     }
 
     // 2️⃣ VALIDAÇÃO: Nome do exchange
-    const exchangeName = req.query.exchange;
+    const exchangeName = req.query.exchange as string | undefined;
     if (!exchangeName) {
       return res.status(400).json({
         success: false,
@@ -245,11 +249,11 @@ app.all('/webhook', async (req, res) => {
     // 3️⃣ VALIDAÇÃO: Conexão com RabbitMQ
     if (!channel) {
       console.warn('⚠️  Requisição recebida mas RabbitMQ está desconectado');
-      
+
       if (!isReconnecting && !reconnectTimer) {
         scheduleReconnect();
       }
-      
+
       return res.status(503).json({
         success: false,
         error: 'RabbitMQ não está conectado. Tentando reconectar...',
@@ -261,7 +265,7 @@ app.all('/webhook', async (req, res) => {
     // 4️⃣ GARANTIR QUE EXCHANGE EXISTE (cria se não existir)
     console.log(`\n📥 Webhook recebido - Exchange: '${exchangeName}'`);
     const exchangeReady = await ensureExchange(exchangeName);
-    
+
     if (!exchangeReady) {
       return res.status(500).json({
         success: false,
@@ -288,7 +292,7 @@ app.all('/webhook', async (req, res) => {
 
     // 6️⃣ PUBLICAR mensagem no exchange
     const message = Buffer.from(JSON.stringify(dataToSend));
-    
+
     channel.publish(exchangeName, '', message, {
       persistent: true,              // Mensagem sobrevive a restart do RabbitMQ
       contentType: 'application/json',
@@ -305,27 +309,28 @@ app.all('/webhook', async (req, res) => {
       timestamp: dataToSend.timestamp
     });
 
-  } catch (error) {
-    console.error('❌ Erro ao processar webhook:', error.message);
-    
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error('❌ Erro ao processar webhook:', err.message);
+
     // Se o erro for relacionado ao canal/conexão, limpa e agenda reconexão
-    if (error.message.includes('Channel closed') || 
-        error.message.includes('Connection closed') ||
-        error.message.includes('Channel ended')) {
+    if (err.message.includes('Channel closed') ||
+        err.message.includes('Connection closed') ||
+        err.message.includes('Channel ended')) {
       channel = null;
       exchangeCache.clear();
       scheduleReconnect();
     }
-    
+
     res.status(500).json({
       success: false,
       error: 'Erro ao processar webhook',
-      details: error.message
+      details: err.message
     });
   }
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     rabbitmq: channel ? 'connected' : 'disconnected',
@@ -338,7 +343,7 @@ app.get('/health', (req, res) => {
 });
 
 // Endpoint de debug para testar conexão
-app.get('/debug', async (req, res) => {
+app.get('/debug', async (req: Request, res: Response) => {
   const debugInfo = {
     env: {
       RABBITMQ_URL_SET: !!RABBITMQ_URL,
@@ -358,23 +363,23 @@ app.get('/debug', async (req, res) => {
     },
     timestamp: new Date().toISOString()
   };
-  
+
   res.json(debugInfo);
 });
 
 async function start() {
   const connected = await connectRabbitMQ();
-  
+
   if (!connected && reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     console.error('💀 Não foi possível conectar ao RabbitMQ após múltiplas tentativas. Encerrando...');
     process.exit(1);
   }
-  
+
   if (!connected) {
     console.warn('⚠️  Iniciando servidor sem conexão com RabbitMQ. Tentará reconectar automaticamente...');
     scheduleReconnect();
   }
-  
+
   app.listen(PORT, () => {
     console.log(`\n🚀 API rodando na porta ${PORT}`);
     console.log(`📍 Webhook: http://localhost:${PORT}/webhook?exchange=NOME&token=TOKEN`);
@@ -385,28 +390,29 @@ async function start() {
 
 process.on('SIGINT', async () => {
   console.log('\n⏹️  Encerrando aplicação...');
-  
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  
+
   try {
     if (channel) await channel.close();
     if (connection) await connection.close();
     console.log('✅ Conexões fechadas com sucesso');
-  } catch (error) {
-    console.error('❌ Erro ao fechar conexões:', error.message);
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error('❌ Erro ao fechar conexões:', err.message);
   }
-  
+
   process.exit(0);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('❌ Unhandled Rejection:', reason);
 });
 
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', (error: Error) => {
   console.error('❌ Uncaught Exception:', error);
   process.exit(1);
 });

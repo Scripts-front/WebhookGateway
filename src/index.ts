@@ -473,8 +473,16 @@ app.get('/health', (req: Request, res: Response) => {
   });
 });
 
-// Endpoint de debug para testar conexão
+// Endpoint de debug para testar conexão (protegido por token)
 app.get('/debug', async (req: Request, res: Response) => {
+  const token = req.query.token;
+  if (!token || token !== AUTH_TOKEN) {
+    return res.status(401).json({
+      success: false,
+      error: 'Token de autenticação inválido ou ausente'
+    });
+  }
+
   const debugInfo = {
     env: {
       RABBITMQ_URL_SET: !!RABBITMQ_URL,
@@ -520,7 +528,7 @@ async function start() {
     console.log(`📍 Webhook (Exchange): http://localhost:${PORT}/webhook?exchange=NOME&token=TOKEN`);
     console.log(`📍 Webhook (Fila):     http://localhost:${PORT}/webhook?queue=NOME&token=TOKEN`);
     console.log(`💚 Health: http://localhost:${PORT}/health`);
-    console.log(`🐛 Debug: http://localhost:${PORT}/debug`);
+    console.log(`🐛 Debug: http://localhost:${PORT}/debug?token=TOKEN`);
   });
 }
 

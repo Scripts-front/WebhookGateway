@@ -26,8 +26,8 @@ console.log('   AUTH_TOKEN:', AUTH_TOKEN ? 'Configurado ✅' : 'Não configurado
 console.log('   MAX_RECONNECT_ATTEMPTS:', MAX_RECONNECT_ATTEMPTS);
 console.log('   ENABLE_CACHE_SKIP:', ENABLE_CACHE_SKIP ? '✅ Habilitado (rápido)' : '❌ Desabilitado (seguro)');
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 let connection: ChannelModel | null = null;
 let channel: Channel | null = null;
